@@ -1,0 +1,397 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Interactive Route Planner with Fuel Icons and Autocomplete</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+      @import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap");
+      body {
+        font-family: "Inter", sans-serif;
+      }
+      #map {
+        height: 500px;
+        width: 100%;
+      }
+      .spinner {
+        border: 4px solid rgba(0, 0, 0, 0.1);
+        border-top: 4px solid #3498db;
+        border-radius: 50%;
+        width: 50px;
+        height: 50px;
+        animation: spin 1s linear infinite;
+      }
+      @keyframes spin {
+        0% {
+          transform: rotate(0deg);
+        }
+        100% {
+          transform: rotate(360deg);
+        }
+      }
+      .spinner-wrapper {
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        display: none;
+        justify-content: center;
+        align-items: center;
+        z-index: 10;
+      }
+    </style>
+  </head>
+  <body class="bg-gray-100 relative">
+    <div class="max-w-4xl mx-auto p-4">
+      <h1 class="text-3xl font-semibold text-gray-800 mb-4 text-center">
+        Route Planner
+      </h1>
+
+      <div id="instructions" class="text-gray-600 text-lg mb-4 text-center">
+        Click on the map to set the source and destination points.
+      </div>
+
+      <div class="flex mb-4">
+        <input
+          id="sourceInput"
+          type="text"
+          placeholder="Enter Source"
+          class="border rounded-lg p-2 mr-2 w-1/2"
+        />
+        <input
+          id="destinationInput"
+          type="text"
+          placeholder="Enter Destination"
+          class="border rounded-lg p-2 w-1/2"
+        />
+        <button
+          class="bg-blue-500 text-white p-2 rounded-lg ml-2"
+          onclick="geocodeAndUpdate()"
+        >
+          Go
+        </button>
+      </div>
+
+      <div id="mapWrapper" class="relative">
+        <div id="spinner" class="spinner-wrapper">
+          <div class="spinner"></div>
+        </div>
+        <div id="map" class="rounded-lg shadow-lg mb-6"></div>
+      </div>
+
+      <div class="flex justify-between items-center mb-6">
+        <div class="flex-1">
+          <p class="text-gray-800 text-lg">
+            Total Fuel Cost: <span id="fuelCost" class="font-semibold">$0</span>
+          </p>
+          <p class="text-gray-800 text-lg">
+            Total Fuel Intake:
+            <span id="fuelIntake" class="font-semibold">0 gallons</span>
+          </p>
+          <p class="text-gray-800 text-lg">
+            Response Time:
+            <span id="responseTime" class="font-semibold">0 ms</span>
+          </p>
+        </div>
+        <button
+          id="resetButton"
+          class="bg-red-500 hover:bg-red-600 text-white font-semibold py-2 px-6 rounded-lg shadow-md transition-all duration-200 ease-in-out"
+          onclick="resetMap()"
+        >
+          Reset
+        </button>
+      </div>
+    </div>
+
+    <script>
+      let map,
+        directionsService,
+        directionsRenderer,
+        geocoder,
+        autocompleteSource,
+        autocompleteDestination;
+      let sourceMarker, destinationMarker;
+      let fuelMarkers = [];
+      let hasSource = false,
+        hasDestination = false;
+
+      const initialMapSettings = {
+        zoom: 4,
+        center: { lat: 37.0902, lng: -95.7129 },
+      };
+
+      const fuelIconUrl =
+        "https://img.icons8.com/emoji/48/000000/fuel-pump.png";
+
+      function initMap() {
+        document.getElementById("spinner").style.display = "flex";
+
+        directionsService = new google.maps.DirectionsService();
+        directionsRenderer = new google.maps.DirectionsRenderer();
+        geocoder = new google.maps.Geocoder();
+
+        map = new google.maps.Map(
+          document.getElementById("map"),
+          initialMapSettings
+        );
+        directionsRenderer.setMap(map);
+
+        autocompleteSource = new google.maps.places.Autocomplete(
+          document.getElementById("sourceInput")
+        );
+        autocompleteDestination = new google.maps.places.Autocomplete(
+          document.getElementById("destinationInput")
+        );
+
+        google.maps.event.addListenerOnce(map, "tilesloaded", function () {
+          document.getElementById("spinner").style.display = "none";
+        });
+
+        map.addListener("click", function (event) {
+          if (!hasSource) {
+            sourceMarker = new google.maps.Marker({
+              position: event.latLng,
+              map: map,
+              title: "Source",
+              draggable: true,
+            });
+            hasSource = true;
+            document.getElementById("instructions").textContent =
+              "Click on the map to set the destination.";
+            google.maps.event.addListener(
+              sourceMarker,
+              "dragend",
+              updateRouteIfBothMarkersSet
+            );
+          } else if (!hasDestination) {
+            destinationMarker = new google.maps.Marker({
+              position: event.latLng,
+              map: map,
+              title: "Destination",
+              draggable: true,
+            });
+            hasDestination = true;
+            document.getElementById("instructions").textContent =
+              "Both points set! Calculating route...";
+            google.maps.event.addListener(
+              destinationMarker,
+              "dragend",
+              updateRouteIfBothMarkersSet
+            );
+            updateRouteIfBothMarkersSet();
+          }
+        });
+      }
+
+      function updateRouteIfBothMarkersSet() {
+        if (hasSource && hasDestination) {
+          const source = sourceMarker.getPosition();
+          const destination = destinationMarker.getPosition();
+
+          document.getElementById("spinner").style.display = "flex";
+          const startTime = new Date().getTime();
+
+          fetch(
+            `http://127.0.0.1:8000/route/api?source=${source.lat()},${source.lng()}&destination=${destination.lat()},${destination.lng()}`
+          )
+            .then((response) => response.json())
+            .then((data) => {
+              const endTime = new Date().getTime();
+              const timeTaken = endTime - startTime;
+              document.getElementById(
+                "responseTime"
+              ).textContent = `${timeTaken} ms`;
+
+              clearFuelMarkers();
+
+              const waypoints = data.route.map((point) => ({
+                location: new google.maps.LatLng(point[0], point[1]),
+                stopover: false,
+              }));
+
+              waypoints.slice(1, -1).forEach((waypoint) => {
+                const fuelMarker = new google.maps.Marker({
+                  position: waypoint.location,
+                  map: map,
+                  icon: fuelIconUrl,
+                  title: "Fuel Stop",
+                });
+                fuelMarkers.push(fuelMarker);
+              });
+
+              const request = {
+                origin: waypoints.shift().location,
+                destination: waypoints.pop().location,
+                waypoints: waypoints,
+                travelMode: google.maps.TravelMode.DRIVING,
+              };
+
+              directionsService.route(request, function (result, status) {
+                if (status === "OK") {
+                  directionsRenderer.setDirections(result);
+                } else {
+                  alert("Directions request failed due to " + status);
+                }
+                document.getElementById("spinner").style.display = "none";
+              });
+
+              document.getElementById("fuelCost").textContent =
+                "$" + data.total_fuel_cost.toFixed(2);
+              document.getElementById("fuelIntake").textContent =
+                data.total_fuel_intake.toFixed(2) + " gallons";
+              document.getElementById("instructions").textContent =
+                "Route calculated! You can drag the markers to recalculate.";
+            })
+            .catch((error) => {
+              console.error("Error fetching the route:", error);
+              document.getElementById("spinner").style.display = "none";
+            });
+        }
+      }
+
+      function clearFuelMarkers() {
+        fuelMarkers.forEach((marker) => marker.setMap(null));
+        fuelMarkers = [];
+      }
+
+      function resetMap() {
+        if (sourceMarker) {
+          sourceMarker.setMap(null);
+          sourceMarker = null;
+        }
+        if (destinationMarker) {
+          destinationMarker.setMap(null);
+          destinationMarker = null;
+        }
+        clearFuelMarkers();
+        directionsRenderer.set("directions", null);
+        hasSource = false;
+        hasDestination = false;
+
+        document.getElementById("instructions").textContent =
+          "Click on the map to set the source and destination points.";
+        document.getElementById("fuelCost").textContent = "$0";
+        document.getElementById("fuelIntake").textContent = "0 gallons";
+        document.getElementById("responseTime").textContent = "0 ms";
+        map.setCenter(initialMapSettings.center);
+        map.setZoom(initialMapSettings.zoom);
+
+        // Clear the input fields
+        document.getElementById("sourceInput").value = "";
+        document.getElementById("destinationInput").value = "";
+
+        // Reinitialize autocomplete
+        autocompleteSource = new google.maps.places.Autocomplete(
+          document.getElementById("sourceInput")
+        );
+        autocompleteDestination = new google.maps.places.Autocomplete(
+          document.getElementById("destinationInput")
+        );
+
+        // Add event listeners again for the autocomplete input
+        autocompleteSource.addListener("place_changed", function () {
+          const place = autocompleteSource.getPlace();
+          if (place.geometry) {
+            if (!sourceMarker) {
+              sourceMarker = new google.maps.Marker({
+                map: map,
+                draggable: true,
+              });
+              hasSource = true;
+              google.maps.event.addListener(
+                sourceMarker,
+                "dragend",
+                updateRouteIfBothMarkersSet
+              );
+            }
+            sourceMarker.setPosition(place.geometry.location);
+            map.setCenter(place.geometry.location);
+            updateRouteIfBothMarkersSet();
+          }
+        });
+
+        autocompleteDestination.addListener("place_changed", function () {
+          const place = autocompleteDestination.getPlace();
+          if (place.geometry) {
+            if (!destinationMarker) {
+              destinationMarker = new google.maps.Marker({
+                map: map,
+                draggable: true,
+              });
+              hasDestination = true;
+              google.maps.event.addListener(
+                destinationMarker,
+                "dragend",
+                updateRouteIfBothMarkersSet
+              );
+            }
+            destinationMarker.setPosition(place.geometry.location);
+            map.setCenter(place.geometry.location);
+            updateRouteIfBothMarkersSet();
+          }
+        });
+      }
+
+      function geocodeAndUpdate() {
+        const sourceInput = document.getElementById("sourceInput").value;
+        const destinationInput =
+          document.getElementById("destinationInput").value;
+
+        if (sourceInput && destinationInput) {
+          geocoder.geocode(
+            { address: sourceInput },
+            function (results, status) {
+              if (status === "OK") {
+                if (!sourceMarker) {
+                  sourceMarker = new google.maps.Marker({
+                    map: map,
+                    draggable: true,
+                  });
+                  hasSource = true;
+                }
+                sourceMarker.setPosition(results[0].geometry.location);
+                map.setCenter(results[0].geometry.location);
+                google.maps.event.addListener(
+                  sourceMarker,
+                  "dragend",
+                  updateRouteIfBothMarkersSet
+                );
+
+                geocoder.geocode(
+                  { address: destinationInput },
+                  function (results, status) {
+                    if (status === "OK") {
+                      if (!destinationMarker) {
+                        destinationMarker = new google.maps.Marker({
+                          map: map,
+                          draggable: true,
+                        });
+                        hasDestination = true;
+                      }
+                      destinationMarker.setPosition(
+                        results[0].geometry.location
+                      );
+                      updateRouteIfBothMarkersSet();
+                      google.maps.event.addListener(
+                        destinationMarker,
+                        "dragend",
+                        updateRouteIfBothMarkersSet
+                      );
+                    } else {
+                      alert("Destination not found: " + status);
+                    }
+                  }
+                );
+              } else {
+                alert("Source not found: " + status);
+              }
+            }
+          );
+        }
+      }
+    </script>
+
+    <script async src="/route/proxy-google-maps?callback=initMap"></script>
+  </body>
+</html>
